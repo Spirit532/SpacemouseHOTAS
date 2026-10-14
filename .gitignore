@@ -1,0 +1,7 @@
+build*/
+.vs/
+.vscode/
+.clangd
+.cache/
+*SpacemouseHOTAS.mp4*
+*thumb*

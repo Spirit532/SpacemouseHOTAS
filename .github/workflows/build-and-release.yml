@@ -1,0 +1,101 @@
+# Builds all platforms on every push and pull request. On a push to main it publishes release vX.Y
+# (version from CMakeLists.txt) unless that release already exists, so bump the version to ship a new one.
+name: Build and release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          version=$(sed -nE 's/^project\(SpacemouseHOTAS VERSION ([0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -A x64
+      - run: cmake --build build --config Release
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "SpacemouseHOTAS-${{ needs.version.outputs.version }}-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item build/Release/SpacemouseHOTAS.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: "*.zip"
+
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04  # older glibc runs on more distributions
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxft-dev
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - name: Package
+        run: |
+          name=SpacemouseHOTAS-${{ needs.version.outputs.version }}-linux-x64
+          mkdir "$name"
+          cp build/SpacemouseHOTAS README.md LICENSE THIRD_PARTY_NOTICES.md packaging/linux/99-spacemousehotas.rules "$name/"
+          tar czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: "*.tar.gz"
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    continue-on-error: true  # untested platform; a failure here does not block the release
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - name: Package
+        run: ditto -c -k --keepParent build/SpacemouseHOTAS.app "SpacemouseHOTAS-${{ needs.version.outputs.version }}-macos.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: "*.zip"
+
+  release:
+    needs: [version, windows, linux, macos]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.windows.result == 'success' && needs.linux.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Bump the version in CMakeLists.txt to publish a new one."
+            exit 0
+          fi
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "SpacemouseHOTAS $VERSION" --generate-notes
