@@ -15,6 +15,7 @@ const uint32_t input = 0x4AA3FF, output = 0xFFA53D, good = 0x4CC979, bad = 0xE05
 struct UiInput {
     int mouseX = -1, mouseY = -1;
     bool leftDown = false;
+    bool shiftDown = false;  // held: sliders snap
     bool leftPressed = false, leftReleased = false, rightPressed = false;
     bool middlePressed = false, x1Pressed = false, x2Pressed = false;
     int wheel = 0;     // notches, + = up
@@ -58,9 +59,11 @@ public:
     bool button(uintptr_t id, int x, int y, int w, int h, const char* label, bool on = false,
                 uint32_t onColor = theme::input);
     bool checkbox(uintptr_t id, int x, int y, const char* label, bool* value);
-    // Drag sets, wheel nudges, right-click resets to `reset`.
+    // Drag sets, wheel nudges, right-click resets to `reset`. Holding Shift snaps to multiples of `snap`.
     bool slider(uintptr_t id, int x, int y, int w, int h, float* value, float lo, float hi, float reset,
-                const char* format);
+                const char* format, float snap = 0.05f);
+    // Invisible drag handle. True while it is held; read input.mouseX/Y for the position.
+    bool drag(uintptr_t id, int x, int y, int w, int h);
     // Values lo..lo+count-1 in a scrollable list. A pick lands in end(), so read *value after it.
     bool dropdown(uintptr_t id, int x, int y, int w, int h, int* value, int lo, int count, ItemNameFn name,
                   void* context, const DropdownStyle& style = DropdownStyle());

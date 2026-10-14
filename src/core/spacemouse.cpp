@@ -5,7 +5,12 @@ static int16_t readInt16(const uint8_t* p) { return (int16_t)(p[0] | (p[1] << 8)
 
 bool isSpaceMouse(uint16_t vendorId, uint16_t productId) {
     if (vendorId == 0x046D) return productId >= 0xC600 && productId <= 0xC6FF;  // 3Dconnexion under Logitech
-    if (vendorId == 0x256F) return productId < 0xC650 || productId > 0xC657;    // excludes the CadMouse family
+    return vendorId == 0x256F;                                                  // 3Dconnexion
+}
+
+bool hasMultiAxisCollection(const uint8_t* d, int length) {
+    for (int i = 0; i + 3 < length; i++)
+        if (d[i] == 0x05 && d[i + 1] == 0x01 && d[i + 2] == 0x09 && d[i + 3] == 0x08) return true;
     return false;
 }
 
@@ -23,7 +28,8 @@ bool parseSpaceMouseReport(const uint8_t* report, int length, SpaceMouseState& s
         if (length >= 7)
             for (int i = 0; i < 3; i++) state.axis[3 + i] = readInt16(report + 1 + i * 2);
         break;
-    case 3: {  // button bitmask, little-endian
+    case 3:       // button bitmask, little-endian
+    case 0x1C: {  // SpaceMouse Enterprise buttons, same layout
         uint32_t buttons = 0;
         for (int i = 1; i < length && i <= 4; i++) buttons |= (uint32_t)report[i] << (8 * (i - 1));
         state.buttons = buttons;

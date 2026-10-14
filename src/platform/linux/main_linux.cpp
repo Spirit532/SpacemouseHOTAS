@@ -70,7 +70,14 @@ void scanHidrawDevices() {
         if (fd < 0) continue;  // no permission yet; inotify reports the udev ACL change
         hidraw_devinfo info;
         memset(&info, 0, sizeof info);
-        if (ioctl(fd, HIDIOCGRAWINFO, &info) < 0 || !isSpaceMouse((uint16_t)info.vendor, (uint16_t)info.product)) {
+        hidraw_report_descriptor descriptor;
+        memset(&descriptor, 0, sizeof descriptor);
+        int descriptorSize = 0;
+        bool multiAxis = ioctl(fd, HIDIOCGRDESCSIZE, &descriptorSize) >= 0 && descriptorSize > 0 &&
+                         (descriptor.size = (uint32_t)descriptorSize, ioctl(fd, HIDIOCGRDESC, &descriptor) >= 0) &&
+                         hasMultiAxisCollection(descriptor.value, (int)descriptor.size);
+        if (ioctl(fd, HIDIOCGRAWINFO, &info) < 0 || !isSpaceMouse((uint16_t)info.vendor, (uint16_t)info.product) ||
+            !multiAxis) {
             ::close(fd);
             continue;
         }
@@ -202,6 +209,11 @@ void setMousePosition(int x, int y) {
 }
 
 void handleWindowEvent(XEvent& event) {
+    switch (event.type) {
+    case MotionNotify: g_input.shiftDown = (event.xmotion.state & ShiftMask) != 0; break;
+    case ButtonPress:
+    case ButtonRelease: g_input.shiftDown = (event.xbutton.state & ShiftMask) != 0; break;
+    }
     switch (event.type) {
     case Expose:
         if (event.xexpose.count == 0) g_paintPending = true;

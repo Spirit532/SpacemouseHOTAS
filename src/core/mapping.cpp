@@ -17,7 +17,8 @@ const char* const kInputNames[] = {"TX", "TY", "TZ", "RX", "RY", "RZ"};
 const char* const kOutputNames[] = {"X", "Y", "Z", "RX", "RY", "RZ", "SL0", "SL1"};
 const char* const kModeNames[] = {"Direct", "Trim (sticky)"};
 const char* const kDeadzoneNames[] = {"Hard", "Scaled", "Smooth"};
-const char* const kCurveNames[] = {"Linear", "Power", "Expo", "S-curve"};
+const char* const kCurveNames[] = {"Linear", "Power", "Expo", "S-curve", "Exponential", "Custom"};
+const char* const kMixModeNames[] = {"Additive", "Average"};
 const char* const kHatNames[] = {"Up", "Right", "Down", "Left"};
 const char* const kGroupNames[] = {"Off", "Group 1", "Group 2", "Group 3", "Group 4", "Group 5"};
 
@@ -28,6 +29,7 @@ const char* outputAxisName(int axis) { return nameAt(kOutputNames, axis, "-"); }
 const char* axisModeName(int mode) { return nameAt(kModeNames, mode, "?"); }
 const char* deadzoneShapeName(int shape) { return nameAt(kDeadzoneNames, shape, "?"); }
 const char* curveName(int curve) { return nameAt(kCurveNames, curve, "?"); }
+const char* mixModeName(int mode) { return nameAt(kMixModeNames, mode, "?"); }
 const char* hatDirectionName(int direction) { return nameAt(kHatNames, direction, "?"); }
 const char* axisGroupName(int group) { return nameAt(kGroupNames, group, "?"); }
 
@@ -47,19 +49,28 @@ void setDefaultAxis(AxisConfig& a) {
     a.invert = false;
     a.smoothing = 0.02f;
     a.group = 0;
+    a.mixMode = MIX_ADD;
+    for (int i = 0; i < kCustomCurvePoints; i++) a.customCurve[i] = (i + 1) / (float)kCustomCurvePoints;
 }
 
-// Stick feel tuned in Wardogs: full range, no deadzone, steep S-curve.
-static void setStickAxis(AxisConfig& a, int input, float weight) {
+// Feel tuned in Wardogs: full range, no deadzone, no smoothing.
+static void setTunedAxis(AxisConfig& a, float steepness, float smoothing) {
     a.enabled = true;
-    a.mix[0] = {input, weight};
     a.deadzone = 0.0f;
     a.deadzoneShape = DEADZONE_SCALED;
     a.deadzoneSoftness = 0.0f;
     a.saturation = 1.0f;
-    a.curve = CURVE_SCURVE;
-    a.steepness = 1.0f;
-    a.smoothing = 0.0f;
+    a.curve = CURVE_EXPONENTIAL;
+    a.steepness = steepness;
+    a.smoothing = smoothing;
+}
+
+static void setStickAxis(AxisConfig& a, int tilt, int slide, float slideWeight) {
+    setTunedAxis(a, 0.35f, 0.01f);
+    a.mix[0] = {tilt, 1.0f};
+    a.mix[1] = {slide, slideWeight};
+    const float custom[kCustomCurvePoints] = {0.06f, 0.17f, 0.42f, 1.0f};
+    memcpy(a.customCurve, custom, sizeof custom);
 }
 
 void setDefaultProfile(Profile& p) {
@@ -67,11 +78,17 @@ void setDefaultProfile(Profile& p) {
     for (InputConfig& in : p.inputs) in = {350.0f, false};
     for (AxisConfig& a : p.axes) setDefaultAxis(a);
 
-    // Raw HID frame: +RY tilts the cap left, +RX tilts it toward you, +TZ pushes it down.
-    setStickAxis(p.axes[OUTPUT_X], INPUT_RY, -1.0f);  // roll
-    setStickAxis(p.axes[OUTPUT_Y], INPUT_RX, 1.0f);   // pitch, pull back = +Y
-    setStickAxis(p.axes[OUTPUT_Z], INPUT_TZ, -1.0f);  // collective, lift = up
-    p.axes[OUTPUT_Z].trimRate = 1.635f;
+    // Stick: tilt for large inputs plus a small share of sliding the cap for fine corrections.
+    setStickAxis(p.axes[OUTPUT_X], INPUT_RY, INPUT_TX, -0.25f);  // roll
+    setStickAxis(p.axes[OUTPUT_Y], INPUT_RX, INPUT_TY, 0.25f);   // pitch, pull back = +Y
+
+    AxisConfig& collective = p.axes[OUTPUT_Z];  // lift = up
+    setTunedAxis(collective, 0.25f, 0.0f);
+    collective.mix[0] = {INPUT_TZ, -1.0f};
+    collective.deadzone = 0.005f;
+    collective.deadzoneShape = DEADZONE_SMOOTH;
+    collective.gain = 2.9f;
+    collective.trimRate = 1.635f;
 
     AxisConfig& rudder = p.axes[OUTPUT_RZ];  // twist, clockwise = right
     rudder.enabled = true;
@@ -108,6 +125,8 @@ void copyGroupedSettings(const AxisConfig& before, const AxisConfig& after, Axis
     COPY_IF_CHANGED(steepness);
     COPY_IF_CHANGED(gain);
     COPY_IF_CHANGED(smoothing);
+    COPY_IF_CHANGED(mixMode);
+    for (int i = 0; i < kCustomCurvePoints; i++) COPY_IF_CHANGED(customCurve[i]);
 #undef COPY_IF_CHANGED
 }
 
@@ -182,22 +201,52 @@ int findButtonTarget(const ButtonMapping& mapping) {
 
 // Response ------------------------------------------------------------------------------------
 
-float applyCurve(int curve, float steepness, float a) {
+static float smoothstep(float a) { return a * a * (3 - 2 * a); }
+static float inverseSmoothstep(float a) { return 0.5f - sinf(asinf(clampf(1 - 2 * a, -1.0f, 1.0f)) / 3.0f); }
+
+// Catmull-Rom through (0,0) and the four custom points, mirrored past both ends so the slope there stays natural.
+static float customCurve(const float* points, float a) {
+    float y[kCustomCurvePoints + 3];
+    y[1] = 0;
+    for (int i = 0; i < kCustomCurvePoints; i++) y[i + 2] = points[i];
+    y[0] = -y[2];  // odd symmetry around zero
+    y[kCustomCurvePoints + 2] = 2 * y[kCustomCurvePoints + 1] - y[kCustomCurvePoints];
+    float position = a * kCustomCurvePoints;
+    int segment = position >= kCustomCurvePoints ? kCustomCurvePoints - 1 : (int)position;
+    float t = position - segment;
+    float p0 = y[segment], p1 = y[segment + 1], p2 = y[segment + 2], p3 = y[segment + 3];
+    float value = 0.5f * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
+                          (3 * p1 - p0 - 3 * p2 + p3) * t * t * t);
+    return clampf(value, 0.0f, 1.0f);
+}
+
+// Steepness runs -2..2. Within -1..1 every curve keeps its original shape; beyond that each
+// continues smoothly toward a stronger version of the same shape.
+float applyCurve(const AxisConfig& c, float a) {
     a = clampf(a, 0.0f, 1.0f);
-    float s = clampf(steepness, -1.0f, 1.0f);
-    switch (curve) {
-    case CURVE_POWER: return powf(a, powf(4.0f, s));  // exponent 0.25..4
-    case CURVE_EXPO:
-        if (s >= 0) return (1 - s) * a + s * a * a * a;  // flatter center
-        return a + (-s * 0.5f) * (a - a * a * a);        // livelier center, still monotonic
-    case CURVE_SCURVE: {
-        if (s >= 0) {
-            float smooth = a * a * (3 - 2 * a);  // flat center and ends
-            return a + (smooth - a) * s;
-        }
-        float inverse = 0.5f - sinf(asinf(1 - 2 * a) / 3.0f);  // steep center and ends
-        return a + (inverse - a) * -s;
+    float s = clampf(c.steepness, -kSteepnessLimit, kSteepnessLimit);
+    switch (c.curve) {
+    case CURVE_POWER: return powf(a, powf(4.0f, s));  // exponent 1/16..16
+    case CURVE_EXPO: {
+        float cube = a * a * a;
+        if (s > 1) return (2 - s) * cube + (s - 1) * cube * a * a;  // toward a^5
+        if (s >= 0) return (1 - s) * a + s * cube;                  // flatter center
+        float lively = a + 0.5f * (a - cube);                       // s = -1 shape
+        if (s >= -1) return a + (-s * 0.5f) * (a - cube);           // livelier center
+        return (-1 - s) * cbrtf(a) + (2 + s) * lively;              // toward a^(1/3)
     }
+    case CURVE_SCURVE: {
+        if (s > 1) return (2 - s) * smoothstep(a) + (s - 1) * smoothstep(smoothstep(a));
+        if (s >= 0) return a + (smoothstep(a) - a) * s;           // flat center and ends
+        if (s >= -1) return a + (inverseSmoothstep(a) - a) * -s;  // steep center and ends
+        return (2 + s) * inverseSmoothstep(a) + (-1 - s) * inverseSmoothstep(inverseSmoothstep(a));
+    }
+    case CURVE_EXPONENTIAL: {
+        float k = s * 4.0f;  // + = slow start, fast finish; - = the reverse
+        if (fabsf(k) < 0.001f) return a;
+        return (expf(k * a) - 1) / (expf(k) - 1);
+    }
+    case CURVE_CUSTOM: return customCurve(c.customCurve, a);
     default: return a;
     }
 }
@@ -217,7 +266,7 @@ float applyResponse(const AxisConfig& c, float value) {
         float width = clampf(c.deadzoneSoftness, 0.001f, 1.0f);
         a = (t < width ? t * t / (2 * width) : t - width * 0.5f) / (1 - width * 0.5f);
     }  // DEADZONE_HARD keeps the raw value past the edge
-    return clampf(sign * applyCurve(c.curve, c.steepness, a) * c.gain, -1.0f, 1.0f);
+    return clampf(sign * applyCurve(c, a) * c.gain, -1.0f, 1.0f);
 }
 
 // Mapper --------------------------------------------------------------------------------------
@@ -321,9 +370,15 @@ bool Mapper::update(const Profile& p, float dt, bool outputActive) {
             mixed[o] = shaped[o] = target[o] = output[o] = 0;
             continue;
         }
-        float sum = 0;
+        // Additive sums the weighted sources (and clips). Average divides by the total weight, so the
+        // weights only set each source's share.
+        float sum = 0, totalWeight = 0;
         for (const MixSource& m : c.mix)
-            if (m.input >= 0 && m.input < INPUT_AXIS_COUNT) sum += m.weight * input[m.input];
+            if (m.input >= 0 && m.input < INPUT_AXIS_COUNT) {
+                sum += m.weight * input[m.input];
+                totalWeight += fabsf(m.weight);
+            }
+        if (c.mixMode == MIX_AVERAGE && totalWeight > 0.0001f) sum /= totalWeight;
         mixed[o] = clampf(sum, -1.0f, 1.0f);
         float y = applyResponse(c, mixed[o]);
         shaped[o] = c.invert ? -y : y;

@@ -303,26 +303,15 @@ void CALLBACK onForegroundChanged(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD,
 const char* setDeviceCapture(bool capture) {
     if (!capture) {
         g_capture.stop();
-        g_app.ignoreRawReports = false;
         return nullptr;
     }
-    const char* error = g_capture.start(g_host);
-    g_app.ignoreRawReports = error == nullptr;
-    return error;
+    return g_capture.start(g_host);
 }
 
 // Window procedures --------------------------------------------------------------------------
 
 LRESULT CALLBACK hostProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-    bool captureStateChanged = false;
-    if (g_capture.handleMessage(message, wParam, lParam, captureStateChanged)) {
-        if (captureStateChanged) {
-            g_app.setDeviceState(g_capture.axes, g_capture.buttons);
-            g_app.update(now());
-            syncWithApp();
-        }
-        return 0;
-    }
+    if (g_capture.handleMessage(message, wParam, lParam)) return 0;
     switch (message) {
     case WM_INPUT:
         onRawInput((HRAWINPUT)lParam);
@@ -393,6 +382,7 @@ void setMousePosition(LPARAM lParam) {
 void paintWindow(HWND window) {
     PAINTSTRUCT paint;
     HDC dc = BeginPaint(window, &paint);
+    g_input.shiftDown = GetKeyState(VK_SHIFT) < 0;
     bool again = g_app.drawFrame(g_input, g_scale);
     g_input.clearEdges();
     const Canvas& canvas = g_app.canvas();

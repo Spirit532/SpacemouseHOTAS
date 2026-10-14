@@ -31,13 +31,11 @@ public:
     bool quitRequested = false;
     bool redrawNeeded = true;         // live data changed since the last frame
     bool timedUpdatesNeeded = false;  // call update() about every 10 ms while set
-    bool ignoreRawReports = false;    // set while input arrives through the capture path
 
     void init(VirtualPad* virtualPad, const PlatformHooks& platformHooks, const std::string& configPath);
     void shutdown();
 
     void onDeviceReport(const uint8_t* data, int length);
-    void setDeviceState(const int16_t* axes, uint32_t buttons);  // input from the capture path
     void onDeviceArrived(uint16_t vendorId, uint16_t productId, const char* name);
     void onDeviceRemoved();
     void update(double now);
@@ -107,6 +105,7 @@ private:
     void drawOutputPanel(int x, int y, int w, int h);
     void drawEditor(int x, int y, int w, int h);
     void drawAxesTab(int x, int y, int w);
+    void drawCustomCurveHandles(AxisConfig& a, int plotX, int plotY, int size);
     void drawButtonsTab(int x, int y, int w);
     void drawInputsTab(int x, int y, int w);
     void drawSetupTab(int x, int y, int w, int h);

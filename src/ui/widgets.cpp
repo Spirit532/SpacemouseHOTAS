@@ -1,4 +1,5 @@
 #include "ui/widgets.h"
+#include <cmath>
 #include <cstdio>
 #include "core/keys.h"
 
@@ -170,8 +171,14 @@ bool Ui::checkbox(uintptr_t id, int x, int y, const char* label, bool* value) {
     return clicked;
 }
 
+bool Ui::drag(uintptr_t id, int x, int y, int w, int h) {
+    lastHovered_ = hovered(x, y, w, h);
+    press(id, lastHovered_ && !disabled);
+    return activeId_ == id && input.leftDown && !disabled;
+}
+
 bool Ui::slider(uintptr_t id, int x, int y, int w, int h, float* value, float lo, float hi, float reset,
-                const char* format) {
+                const char* format, float snap) {
     Canvas& c = *canvas_;
     lastHovered_ = hovered(x, y, w, h);
     bool live = lastHovered_ && !disabled;
@@ -180,8 +187,14 @@ bool Ui::slider(uintptr_t id, int x, int y, int w, int h, float* value, float lo
     if (activeId_ == id && input.leftDown && !disabled) {
         float t = (float)(input.mouseX - x - 1) / (float)(w - 3);
         *value = lo + (t < 0 ? 0 : (t > 1 ? 1 : t)) * (hi - lo);
+        if (input.shiftDown && snap > 0) *value = roundf(*value / snap) * snap;
     }
-    if (live && input.wheel) *value += input.wheel * (hi - lo) / 100.0f;
+    if (live && input.wheel) {
+        if (input.shiftDown && snap > 0)
+            *value = roundf(*value / snap + input.wheel) * snap;
+        else
+            *value += input.wheel * (hi - lo) / 100.0f;
+    }
     if (live && input.rightPressed) *value = reset;
     if (*value < lo) *value = lo;
     if (*value > hi) *value = hi;

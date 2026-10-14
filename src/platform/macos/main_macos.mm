@@ -328,6 +328,7 @@ static AppDelegate* g_delegate;
 }
 - (void)drawRect:(NSRect)dirty {
     UiInput in = self.input;
+    in.shiftDown = ([NSEvent modifierFlags] & NSEventModifierFlagShift) != 0;
     bool again = g_app.drawFrame(in, [self scale]);
     in.clearEdges();
     self.input = in;

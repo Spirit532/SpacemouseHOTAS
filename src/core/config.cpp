@@ -68,6 +68,12 @@ void forEachField(Profile& p, Visitor visit) {
         field("invert", FIELD_BOOL, &a.invert);
         field("smoothing", FIELD_FLOAT, &a.smoothing);
         field("group", FIELD_INT, &a.group);
+        field("mix_mode", FIELD_INT, &a.mixMode);
+        for (int k = 0; k < kCustomCurvePoints; k++) {
+            char suffix[16];
+            snprintf(suffix, sizeof suffix, "custom%d", k);
+            field(suffix, FIELD_FLOAT, &a.customCurve[k]);
+        }
     }
     for (int b = 0; b < kDeviceButtons; b++) {
         snprintf(key, sizeof key, "btn.%d.action", b);
@@ -93,17 +99,19 @@ void clampProfile(Profile& p) {
         clampValue(a.stickyZero, 0.0f, 1.0f);
         for (MixSource& m : a.mix) {
             clampValue(m.input, -1, INPUT_AXIS_COUNT - 1);
-            clampValue(m.weight, -2.0f, 2.0f);
+            clampValue(m.weight, -3.0f, 3.0f);
         }
         clampValue(a.deadzone, 0.0f, 0.5f);
         clampValue(a.deadzoneShape, 0, DEADZONE_SHAPE_COUNT - 1);
         clampValue(a.deadzoneSoftness, 0.0f, 1.0f);
-        clampValue(a.saturation, 0.2f, 1.0f);
+        clampValue(a.saturation, 0.05f, 1.0f);
         clampValue(a.curve, 0, CURVE_COUNT - 1);
-        clampValue(a.steepness, -1.0f, 1.0f);
-        clampValue(a.gain, 0.0f, 2.0f);
+        clampValue(a.steepness, -kSteepnessLimit, kSteepnessLimit);
+        clampValue(a.gain, 0.0f, 3.0f);
         clampValue(a.smoothing, 0.0f, 0.5f);
         clampValue(a.group, 0, kAxisGroups);
+        clampValue(a.mixMode, 0, MIX_MODE_COUNT - 1);
+        for (float& point : a.customCurve) clampValue(point, 0.0f, 1.0f);
     }
     for (ButtonMapping& b : p.buttons) {
         clampValue(b.action, 0, ACTION_COUNT - 1);

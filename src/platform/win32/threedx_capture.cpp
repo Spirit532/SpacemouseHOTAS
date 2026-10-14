@@ -10,18 +10,6 @@ struct SiGetEventData {
     LPARAM lParam;
 };
 enum { SI_ANY_DEVICE = -1, SI_EVENT = 1, SPW_NO_ERROR = 0, SI_IS_EVENT = 5 };
-enum {
-    SI_BUTTON_EVENT = 1,
-    SI_MOTION_EVENT = 2,
-    SI_ZERO_EVENT = 4,
-    SI_BUTTON_PRESS_EVENT = 12,
-    SI_BUTTON_RELEASE_EVENT = 13
-};
-// SiSpwEvent: int type, then a 4-byte aligned union. For button/motion events the union starts with
-// SiButtonData {last, current, pressed, released} followed by long mData[6].
-const int kEventButtonsCurrentOffset = 8;
-const int kEventMotionOffset = 4 + 16;
-const int kEventButtonNumberOffset = 4;
 
 typedef int(__cdecl* SiInitializeFn)();
 typedef void(__cdecl* SiOpenWinInitFn)(void* openData, HWND window);
@@ -67,15 +55,13 @@ struct SiApi {
     }
 } g_si;
 
-int16_t clampToInt16(long v) { return (int16_t)(v < -32767 ? -32767 : (v > 32767 ? 32767 : v)); }
-
 }  // namespace
 
 const char* ThreeDxCapture::start(HWND window) {
     stop();
-    if (!g_si.load()) return "3DxWare not found";
+    if (!g_si.load()) return nullptr;  // not installed
     if (!g_si.initialized) {
-        if (g_si.initialize() != SPW_NO_ERROR) return "3DxWare not running";
+        if (g_si.initialize() != SPW_NO_ERROR) return nullptr;  // not running
         g_si.initialized = true;
     }
     alignas(16) static BYTE openData[4096];  // SiOpenData, filled by SiOpenWinInit
@@ -87,8 +73,6 @@ const char* ThreeDxCapture::start(HWND window) {
         stop();
         return "3DxWare refused the grab";
     }
-    memset(axes, 0, sizeof axes);
-    buttons = 0;
     return nullptr;
 }
 
@@ -99,43 +83,10 @@ void ThreeDxCapture::stop() {
     handle_ = nullptr;
 }
 
-bool ThreeDxCapture::handleMessage(UINT message, WPARAM wParam, LPARAM lParam, bool& stateChanged) {
-    stateChanged = false;
+bool ThreeDxCapture::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!handle_) return false;
     SiGetEventData data;
     g_si.getEventWinInit(&data, message, wParam, lParam);
     alignas(16) static BYTE event[8192];  // SiSpwEvent, union sized for keyboard data
-    if (g_si.getEvent(handle_, 0, &data, event) != SI_IS_EVENT) return false;
-
-    int type = *(int*)event;
-    const int32_t* motion = (const int32_t*)(event + kEventMotionOffset);
-    switch (type) {
-    case SI_MOTION_EVENT:
-        // 3DxWare frame (X right, Y up, Z toward user) to HID frame (X right, Y toward user, Z down).
-        axes[0] = clampToInt16(motion[0]);
-        axes[1] = clampToInt16(motion[2]);
-        axes[2] = clampToInt16(-motion[1]);
-        axes[3] = clampToInt16(motion[3]);
-        axes[4] = clampToInt16(motion[5]);
-        axes[5] = clampToInt16(-motion[4]);
-        break;
-    case SI_ZERO_EVENT: memset(axes, 0, sizeof axes); break;
-    case SI_BUTTON_EVENT:  // bit n = button n, 1-based
-        buttons = *(uint32_t*)(event + kEventButtonsCurrentOffset) >> 1;
-        break;
-    case SI_BUTTON_PRESS_EVENT:
-    case SI_BUTTON_RELEASE_EVENT: {
-        uint32_t number = *(uint32_t*)(event + kEventButtonNumberOffset);
-        if (number >= 1 && number <= 32) {
-            if (type == SI_BUTTON_PRESS_EVENT)
-                buttons |= 1u << (number - 1);
-            else
-                buttons &= ~(1u << (number - 1));
-        }
-        break;
-    }
-    default: return true;
-    }
-    stateChanged = true;
-    return true;
+    return g_si.getEvent(handle_, 0, &data, event) == SI_IS_EVENT;
 }

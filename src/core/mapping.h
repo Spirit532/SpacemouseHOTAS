@@ -22,7 +22,10 @@ constexpr int kAxisGroups = 5;  // group 0 = not grouped
 
 enum AxisMode { MODE_DIRECT, MODE_TRIM, MODE_COUNT };
 enum DeadzoneShape { DEADZONE_HARD, DEADZONE_SCALED, DEADZONE_SMOOTH, DEADZONE_SHAPE_COUNT };
-enum CurveType { CURVE_LINEAR, CURVE_POWER, CURVE_EXPO, CURVE_SCURVE, CURVE_COUNT };
+enum CurveType { CURVE_LINEAR, CURVE_POWER, CURVE_EXPO, CURVE_SCURVE, CURVE_EXPONENTIAL, CURVE_CUSTOM, CURVE_COUNT };
+enum MixMode { MIX_ADD, MIX_AVERAGE, MIX_MODE_COUNT };
+constexpr int kCustomCurvePoints = 4;  // output at deflection 0.25, 0.5, 0.75, 1 (0 maps to 0)
+constexpr float kSteepnessLimit = 2.0f;
 enum HatDirection { HAT_UP, HAT_RIGHT, HAT_DOWN, HAT_LEFT, HAT_DIRECTION_COUNT };
 enum ButtonAction {
     ACTION_NONE,
@@ -53,16 +56,18 @@ struct AxisConfig {
     float trimRate;    // trim mode: full scale per second at full deflection
     float stickyZero;  // trim mode: 0..1, extra push needed to leave zero after crossing it
     MixSource mix[kMixSources];
-    float deadzone;          // 0..0.5 of deflection
-    int deadzoneShape;       // DeadzoneShape
-    float deadzoneSoftness;  // 0..1, width of the smooth transition
-    float saturation;        // deflection that already gives full output, 0.2..1
-    int curve;               // CurveType
-    float steepness;         // -1..1
-    float gain;              // 0..2
+    float deadzone;                         // 0..0.5 of deflection
+    int deadzoneShape;                      // DeadzoneShape
+    float deadzoneSoftness;                 // 0..1, width of the smooth transition
+    float saturation;                       // deflection that already gives full output, 0.2..1
+    int curve;                              // CurveType
+    float customCurve[kCustomCurvePoints];  // CURVE_CUSTOM outputs, 0..1
+    float steepness;                        // -1..1
+    float gain;                             // 0..2
     bool invert;
     float smoothing;  // low-pass time constant in seconds, 0 = off
     int group;        // 0 = none, 1..kAxisGroups; grouped axes are edited together
+    int mixMode;      // MixMode: sum the sources, or average them by weight
 };
 
 struct ButtonMapping {
@@ -94,6 +99,7 @@ const char* outputAxisName(int axis);  // "X".."SL1"
 const char* axisModeName(int mode);
 const char* deadzoneShapeName(int shape);
 const char* curveName(int curve);
+const char* mixModeName(int mode);
 const char* hatDirectionName(int direction);
 const char* axisGroupName(int group);  // "Off", "Group 1".."Group 5"
 
@@ -107,8 +113,8 @@ int buttonTargetCount();
 const ButtonTarget& buttonTarget(int index);
 int findButtonTarget(const ButtonMapping& mapping);  // index, 0 (= none) if unknown
 
-float applyCurve(int curve, float steepness, float deflection);  // 0..1 -> 0..1
-float applyResponse(const AxisConfig& axis, float value);        // saturation, deadzone, curve, gain; -1..1
+float applyCurve(const AxisConfig& axis, float deflection);  // 0..1 -> 0..1
+float applyResponse(const AxisConfig& axis, float value);    // saturation, deadzone, curve, gain; -1..1
 
 struct Mapper {
     float rawInput[INPUT_AXIS_COUNT] = {};

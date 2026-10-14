@@ -8,6 +8,20 @@ std::vector<CaptureApp> defaultCaptureApps() {
         {"Battlefield", "battlefield|bf6|bf2042|bfv|bf1.exe|bf4.exe"},
         {"DCS World", "dcs.exe|dcs_mt.exe"},
         {"MSFS", "flightsimulator"},
+        {"Squad", "squadgame"},
+        {"Hell Let Loose", "hll-win64"},
+        {"Post Scriptum", "postscriptum"},
+        {"Ground Branch", "groundbranch"},
+        {"Gray Zone Warfare", "gzwclient"},
+        {"Escape from Tarkov", "escapefromtarkov"},
+        {"Insurgency: Sandstorm", "insurgencyclient"},
+        {"Ready or Not", "readyornot"},
+        {"War Thunder", "aces.exe"},
+        {"IL-2 Sturmovik", "il-2.exe"},
+        {"Falcon BMS", "falcon bms"},
+        {"Enlisted", "enlisted.exe"},
+        {"Star Citizen", "starcitizen"},
+        {"Elite Dangerous", "elitedangerous"},
     };
 }
 

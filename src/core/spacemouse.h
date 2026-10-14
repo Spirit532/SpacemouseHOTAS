@@ -10,7 +10,10 @@ struct SpaceMouseState {
     char name[64] = {};
 };
 
+// Vendor check only. Callers also require a multi-axis collection (usage page 1, usage 8), which skips
+// CadMice, including the CadMouse half of the Universal Receiver.
 bool isSpaceMouse(uint16_t vendorId, uint16_t productId);
+bool hasMultiAxisCollection(const uint8_t* reportDescriptor, int length);
 // Returns true if the state changed.
 bool parseSpaceMouseReport(const uint8_t* report, int length, SpaceMouseState& state);
 // Printed label of a button on known models, or nullptr.

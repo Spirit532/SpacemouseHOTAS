@@ -87,19 +87,12 @@ void App::runDeferredActions() {
 
 // Input --------------------------------------------------------------------------------------
 
+// All input comes from the device's HID reports, never from 3DxWare, which scales axes by its own
+// speed settings and swallows buttons it has commands for.
 void App::onDeviceReport(const uint8_t* data, int length) {
-    if (ignoreRawReports || !parseSpaceMouseReport(data, length, device)) return;
+    if (!parseSpaceMouseReport(data, length, device)) return;
     for (int i = 0; i < INPUT_AXIS_COUNT; i++) mapper.rawInput[i] = device.axis[i];
     mapper.deviceButtons = device.buttons;
-}
-
-void App::setDeviceState(const int16_t* axes, uint32_t buttons) {
-    for (int i = 0; i < INPUT_AXIS_COUNT; i++) {
-        device.axis[i] = axes[i];
-        mapper.rawInput[i] = axes[i];
-    }
-    device.buttons = buttons;
-    mapper.deviceButtons = buttons;
 }
 
 void App::onDeviceArrived(uint16_t vendorId, uint16_t productId, const char* name) {
@@ -244,6 +237,7 @@ void App::addCaptureApp(const CaptureApp& app) {
     for (const CaptureApp& existing : captureApps)
         if (toLower(existing.match) == toLower(app.match)) return;
     captureApps.push_back(app);
+    appListScroll_ = (int)captureApps.size();  // clamped when drawn: shows the new entry
     configDirty = true;
     if (captureAppWatchActive()) pollProcesses();
 }
@@ -364,6 +358,7 @@ static const char* modeItem(int v, void*) { return axisModeName(v); }
 static const char* inputItem(int v, void*) { return inputAxisName(v); }
 static const char* deadzoneItem(int v, void*) { return deadzoneShapeName(v); }
 static const char* curveItem(int v, void*) { return curveName(v); }
+static const char* mixModeItem(int v, void*) { return mixModeName(v); }
 static const char* groupItem(int v, void*) { return axisGroupName(v); }
 static const char* targetItem(int v, void*) { return buttonTarget(v).name; }
 static const char* numberItem(int v, void*) {
@@ -578,12 +573,22 @@ void App::drawCaptureSection(int x, int y, int w, int bottom) {
     }
     y += 24;
 
-    // App list with remove buttons; scrolls with the wheel.
-    const int rowH = 16;
-    int visibleRows = (bottom - y) / rowH;
+    // App list with remove buttons. Scrolls with the wheel or the scrollbar when it overflows.
+    const int rowH = 16, scrollbarW = 6;
+    int visibleRows = std::max(1, (bottom - y) / rowH);
     int count = (int)captureApps.size();
-    if (ui_.hovered(x, y, w, visibleRows * rowH) && ui_.input.wheel) appListScroll_ -= ui_.input.wheel;
-    appListScroll_ = std::max(0, std::min(appListScroll_, count - visibleRows));
+    int maxScroll = std::max(0, count - visibleRows);
+    int trackH = visibleRows * rowH;
+    bool scrollable = maxScroll > 0;
+    int listW = scrollable ? w - scrollbarW - 4 : w;
+    if (ui_.hovered(x, y, w, trackH) && ui_.input.wheel) appListScroll_ -= ui_.input.wheel;
+    int knobH = scrollable ? std::max(12, trackH * visibleRows / count) : trackH;
+    if (scrollable && ui_.drag(widgetId("captureApps.scrollbar"), x + w - scrollbarW, y, scrollbarW, trackH)) {
+        // Knob center follows the mouse.
+        int knobTop = ui_.input.mouseY - y - knobH / 2;
+        appListScroll_ = (int)lroundf((float)knobTop * maxScroll / std::max(1, trackH - knobH));
+    }
+    appListScroll_ = std::max(0, std::min(appListScroll_, maxScroll));
     int removeIndex = -1;
     for (int row = 0; row < visibleRows && appListScroll_ + row < count; row++) {
         int i = appListScroll_ + row;
@@ -591,15 +596,16 @@ void App::drawCaptureSection(int x, int y, int w, int bottom) {
         int rowY = y + row * rowH;
         bool running = app.name == runningCaptureApp_;
         uint32_t nameColor = !profile.captureWhenRunning ? faint : (running ? good : text);
-        int nameEnd = c.textClipped(x + 2, rowY + 3, w - 110, app.name.c_str(), nameColor);
-        c.textClipped(nameEnd + 8, rowY + 3, x + w - 24 - nameEnd - 8, app.match.c_str(), faint);
-        if (ui_.button(widgetId("captureApps.remove", i), x + w - 18, rowY, 18, 14, "x")) removeIndex = i;
+        int nameEnd = c.textClipped(x + 2, rowY + 3, listW - 110, app.name.c_str(), nameColor);
+        c.textClipped(nameEnd + 8, rowY + 3, x + listW - 24 - nameEnd - 8, app.match.c_str(), faint);
+        if (ui_.button(widgetId("captureApps.remove", i), x + listW - 18, rowY, 18, 14, "x")) removeIndex = i;
     }
-    if (count > visibleRows) {
-        int trackH = visibleRows * rowH;
-        int knobH = std::max(8, trackH * visibleRows / count);
-        int knobY = y + (trackH - knobH) * appListScroll_ / std::max(1, count - visibleRows);
-        c.fillRect(x + w - 22, knobY, 2, knobH, dim);
+    if (scrollable) {
+        int trackX = x + w - scrollbarW;
+        bool active = ui_.hovered(trackX, y, scrollbarW, trackH);
+        c.fillRect(trackX, y, scrollbarW, trackH, field);
+        int knobY = y + (trackH - knobH) * appListScroll_ / maxScroll;
+        c.fillRect(trackX + 1, knobY + 1, scrollbarW - 2, knobH - 2, active ? theme::text : dim);
     }
     if (removeIndex >= 0) {
         captureApps.erase(captureApps.begin() + removeIndex);
@@ -750,9 +756,16 @@ void App::drawAxesTab(int x, int y, int w) {
         ui_.dropdown(widgetId(&m.input), controlX, rowY, 70, controlH, &m.input, -1, INPUT_AXIS_COUNT + 1, inputItem,
                      nullptr);
         if (m.input >= 0)
-            ui_.slider(widgetId(&m.weight), controlX + 74, rowY, controlW - 74, controlH, &m.weight, -2.0f, 2.0f, 1.0f,
+            ui_.slider(widgetId(&m.weight), controlX + 74, rowY, controlW - 74, controlH, &m.weight, -3.0f, 3.0f, 1.0f,
                        "x %+.2f");
     }
+    label("Mix", true);
+    groupedBegin(true);
+    ui_.dropdown(widgetId(&a.mixMode), controlX, rowY, controlW, controlH, &a.mixMode, 0, MIX_MODE_COUNT, mixModeItem,
+                 nullptr);
+    groupedEnd();
+    if (group == 0) ui_.hint("Additive: sources sum, then clip. Average: weights set each source's share");
+    rowY += rowH;
 
     label("Deadzone", true);
     groupedBegin(true);
@@ -774,7 +787,7 @@ void App::drawAxesTab(int x, int y, int w) {
     rowY += rowH;
     label("Saturation", true);
     groupedBegin(true);
-    ui_.slider(widgetId(&a.saturation), controlX, rowY, controlW, controlH, &a.saturation, 0.2f, 1.0f, 0.85f, "%.2f");
+    ui_.slider(widgetId(&a.saturation), controlX, rowY, controlW, controlH, &a.saturation, 0.05f, 1.0f, 0.85f, "%.2f");
     groupedEnd();
     rowY += rowH;
     label("Curve", true);
@@ -782,15 +795,16 @@ void App::drawAxesTab(int x, int y, int w) {
     ui_.dropdown(widgetId(&a.curve), controlX, rowY, controlW, controlH, &a.curve, 0, CURVE_COUNT, curveItem, nullptr);
     groupedEnd();
     rowY += rowH;
-    bool curved = a.curve != CURVE_LINEAR;
+    bool curved = a.curve != CURVE_LINEAR && a.curve != CURVE_CUSTOM;
     label("Steepness", curved);
     groupedBegin(curved);
-    ui_.slider(widgetId(&a.steepness), controlX, rowY, controlW, controlH, &a.steepness, -1.0f, 1.0f, 0.25f, "%+.2f");
+    ui_.slider(widgetId(&a.steepness), controlX, rowY, controlW, controlH, &a.steepness, -kSteepnessLimit,
+               kSteepnessLimit, 0.25f, "%+.2f");
     groupedEnd();
     rowY += rowH;
     label("Gain", true);
     groupedBegin(true);
-    ui_.slider(widgetId(&a.gain), controlX, rowY, controlW, controlH, &a.gain, 0.0f, 2.0f, 1.0f, "%.2f");
+    ui_.slider(widgetId(&a.gain), controlX, rowY, controlW, controlH, &a.gain, 0.0f, 3.0f, 1.0f, "%.2f");
     groupedEnd();
     rowY += rowH;
     label("Smoothing", true);
@@ -822,6 +836,7 @@ void App::drawAxesTab(int x, int y, int w) {
         prevX = px;
         prevY = py;
     }
+    if (a.curve == CURVE_CUSTOM) drawCustomCurveHandles(a, plotX, plotY, size);
     int dotX = plotX + half + (int)lroundf(mapper.mixed[selectedAxis_] * (half - 2));
     int dotY = plotY + half - (int)lroundf(mapper.shaped[selectedAxis_] * (half - 2));
     c.fillRect(dotX, plotY + 1, 1, size - 2, blendColor(field, input, 120));
@@ -841,7 +856,40 @@ void App::drawAxesTab(int x, int y, int w) {
     if (ui_.button(widgetId("axis.zeroTrim"), infoX, infoY + 58, w - size - 10, 18, "Zero trim"))
         mapper.zeroTrim(selectedAxis_);
     ui_.disabled = false;
-    drawWrapped(c, infoX, infoY + 84, w - size - 10, "Drag or wheel: adjust. Right-click: reset.", faint);
+    drawWrapped(c, infoX, infoY + 84, w - size - 10,
+                a.curve == CURVE_CUSTOM ? "Drag the points to shape the curve. Shift: snap."
+                                        : "Drag or wheel: adjust. Shift: snap. Right-click: reset.",
+                faint);
+}
+
+// Custom curve points sit on the positive half of the plot; drag them up and down.
+void App::drawCustomCurveHandles(AxisConfig& a, int plotX, int plotY, int size) {
+    Canvas& c = canvas_;
+    const int half = size / 2;
+    const float outputSign = a.invert ? -1.0f : 1.0f;
+    for (int i = 0; i < kCustomCurvePoints; i++) {
+        // Input where the curve sees deflection (i+1)/N, through saturation and a scaled deadzone.
+        float deflection = (i + 1) / (float)kCustomCurvePoints;
+        float in = a.saturation * (a.deadzone + deflection * (1 - a.deadzone));
+        float out = applyResponse(a, in) * outputSign;
+        int px = plotX + half + (int)lroundf(in * (half - 2));
+        int py = plotY + half - (int)lroundf(out * (half - 2));
+        uintptr_t id = widgetId(&a.customCurve[i]);
+        if (ui_.drag(id, px - 5, py - 5, 11, 11) && a.gain > 0.001f) {
+            float target = (float)(plotY + half - ui_.input.mouseY) / (half - 2) * outputSign / a.gain;
+            if (ui_.input.shiftDown) target = roundf(target / 0.05f) * 0.05f;
+            target = std::max(0.0f, std::min(1.0f, target));
+            if (target != a.customCurve[i]) {
+                a.customCurve[i] = target;
+                ui_.changed = true;
+            }
+        }
+        char tip[32];
+        snprintf(tip, sizeof tip, "Point %d: %.2f", i + 1, a.customCurve[i]);
+        ui_.hint(tip, output);
+        c.disc(px, py, 3, output);
+        c.disc(px, py, 1, theme::panel);
+    }
 }
 
 void App::drawButtonsTab(int x, int y, int w) {
@@ -882,7 +930,7 @@ void App::drawInputsTab(int x, int y, int w) {
         InputConfig& in = profile.inputs[i];
         c.text(x, rowY + 4, inputAxisName(i), text);
         ui_.checkbox(widgetId(&in.invert), x + 28, rowY + 1, "Inv", &in.invert);
-        ui_.slider(widgetId(&in.range), x + 84, rowY, 150, 16, &in.range, 50.0f, 1000.0f, 350.0f, "%.0f");
+        ui_.slider(widgetId(&in.range), x + 84, rowY, 150, 16, &in.range, 50.0f, 1000.0f, 350.0f, "%.0f", 10.0f);
         ui_.hint("Raw counts at full deflection");
         snprintf(value, sizeof value, "%+5d", (int)device.axis[i]);
         c.text(x + 242, rowY + 4, value, dim);
